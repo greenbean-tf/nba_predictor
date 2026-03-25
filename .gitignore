@@ -1,0 +1,7 @@
+.env
+logs/
+data/raw/
+__pycache__/
+*.pkl
+*.jsonl
+*.log

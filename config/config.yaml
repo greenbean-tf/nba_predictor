@@ -1,0 +1,66 @@
+data:
+  seasons:
+    - "2015-16"
+    - "2016-17"
+    - "2017-18"
+    - "2018-19"
+    - "2019-20"
+    - "2020-21"
+    - "2021-22"
+    - "2022-23"
+    - "2023-24"
+    - "2024-25"
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  features_dir: "data/features"
+  request_delay: 1.5        # seconds between nba_api calls (avoid rate limit)
+
+features:
+  rolling_windows: [5, 10, 20]   # rolling average windows
+  min_games_required: 10          # drop rows with fewer games in history
+
+model:
+  test_seasons: ["2024-25"]       # hold-out for final eval
+  val_seasons:  ["2023-24"]       # validation during training
+  random_seed: 42
+  xgb:
+    n_estimators: 500
+    learning_rate: 0.05
+    max_depth: 6
+    subsample: 0.8
+    colsample_bytree: 0.8
+  lgb:
+    n_estimators: 500
+    learning_rate: 0.05
+    num_leaves: 31
+    subsample: 0.8
+  lstm:
+    seq_len: 10                   # look back 10 games
+    hidden_size: 64
+    num_layers: 2
+    dropout: 0.3
+    epochs: 100
+    batch_size: 64
+    lr: 0.001
+  ensemble:
+    xgb_weight: 0.40
+    lgb_weight: 0.60
+    lstm_weight: 0.00
+
+output:
+  thresholds: [223.5, 224.5, 225.5, 226.5, 227.5, 228.5, 229.5, 230.5, 231.5, 232.5, 233.5, 234.5, 235.5, 236.5]
+  confidence_levels:
+    high:   3.0    # |pred - line| > 3.0 = high confidence
+    medium: 1.5    # |pred - line| > 1.5 = medium confidence
+    low:    0.0    # below 1.5 = low confidence, skip
+  prob_threshold: 0.60            # only output if prob > 60%
+
+backtest:
+  confidence_threshold: 3.0      # only bet when |pred - line| > 3 pts
+  skip_prob_below: 0.60          # skip predictions below this probability
+
+live:
+  poll_interval_sec: 60
+  espn_scoreboard_url: "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+  odds_api_url: "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
+  trigger_quarters: [1, 2]       # predict after Q1 and Q2 (halftime)

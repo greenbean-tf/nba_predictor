@@ -91,3 +91,33 @@ Ensemble 輸出預測總分
 | XGBoost | 40% | 表格特徵、快速 |
 | LightGBM | 40% | 大資料量、記憶體效率 |
 | LSTM | 20% | 時序趨勢、球隊動態 |
+
+## digital ocean
+# 看 log
+tail -f /root/nba_predictor/logs/live_trader.log
+
+# 看服務狀態
+systemctl status nba_trader
+
+# 重啟
+systemctl restart nba_trader
+
+# 停止
+systemctl stop nba_trader
+
+# 手動跑（測試用）
+cd /root/nba_predictor
+python3 src/live/live_trader.py --report
+```
+
+---
+
+# 注意事項
+```
+1. .env 只用 scp 傳一次，之後不動
+2. models/*.pkl 和 features.csv 也只傳一次
+   （之後重新訓練模型才需要更新）
+3. logs/ 和 *.jsonl 不進 git，只在伺服器上
+4. 程式每天自動結束後 systemd 會重啟等待隔天
+5. 每月費用 $6 USD，用信用卡付
+'''

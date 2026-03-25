@@ -103,7 +103,6 @@ nano /etc/systemd/system/nba_trader.timer
 --更改後開始reload
 systemctl daemon-reload
 systemctl restart nba_trader.timer
-systemctl list-timers | grep nba
 --確認觸發時間
 systemctl list-timers | grep nba
 

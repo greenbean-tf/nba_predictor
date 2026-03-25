@@ -85,7 +85,7 @@ ok "目錄建立完成"
 # ── Step 7: 安裝 Python 套件 ───────────────────────────────────
 info "Step 7：安裝 Python 套件..."
 cd "$APP_DIR"
-pip3 install -r requirements.txt --break-system-packages -q
+pip3 install -r requirements.txt -q
 ok "套件安裝完成"
 
 # ── Step 8: 確認 .env 存在 ─────────────────────────────────────

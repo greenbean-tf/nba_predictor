@@ -93,8 +93,23 @@ Ensemble 輸出預測總分
 | LSTM | 20% | 時序趨勢、球隊動態 |
 
 ## digital ocean
+更新 serve code
+ssh root@165.245.224.93
+bash /root/nba_predictor/deploy.sh
+
+# auto service
+nano /etc/systemd/system/nba_trader.service
+nano /etc/systemd/system/nba_trader.timer
+--更改後開始reload
+systemctl daemon-reload
+systemctl restart nba_trader.timer
+systemctl list-timers | grep nba
+--確認觸發時間
+systemctl list-timers | grep nba
+
 # 看 log
 tail -f /root/nba_predictor/logs/live_trader.log
+cat /root/nba_predictor/logs/live_trader.log
 
 # 看服務狀態
 systemctl status nba_trader

@@ -1,3 +1,4 @@
+import os
 """
 polymarket_trader.py
 --------------------
@@ -217,19 +218,29 @@ class PolymarketTrader:
                 # 查詢實際成交價格
                 try:
                     from py_clob_client.clob_types import TradeParams
+                    # 用 maker_address 查，然後比對 taker_order_id + asset_id
+                    funder = os.getenv("POLYMARKET_FUNDER", "")
                     trades = self._client.get_trades(
-                        params=TradeParams(maker_address=None, id=oid)
+                        params=TradeParams(maker_address=funder)
                     )
-                    if trades and isinstance(trades, list) and len(trades) > 0:
-                        t = trades[0]
-                        actual_price = float(t.get("price", market_price))
-                        actual_size  = float(t.get("size",  shares))
+                    # 雙重比對：taker_order_id（order id）+ asset_id（token id）
+                    matched_trade = None
+                    if trades and isinstance(trades, list):
+                        for t in trades:
+                            if (t.get("taker_order_id") == oid and
+                                t.get("asset_id") == token_id):
+                                matched_trade = t
+                                break
+                    if matched_trade:
+                        actual_price = float(matched_trade.get("price", market_price))
+                        actual_size  = float(matched_trade.get("size",  shares))
                         result["actual_price"] = actual_price
                         result["actual_size"]  = actual_size
                         log.info(f"  實際成交：price={actual_price:.4f}  size={actual_size:.4f}")
                     else:
                         result["actual_price"] = market_price
                         result["actual_size"]  = shares
+                        log.warning(f"  找不到成交記錄，使用 market_price={market_price:.4f}")
                 except Exception as e:
                     log.warning(f"  查詢成交價失敗：{e}")
                     result["actual_price"] = market_price

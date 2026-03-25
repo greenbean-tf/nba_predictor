@@ -536,13 +536,15 @@ class LiveTrader:
         home_name = ABBR_TO_FULL.get(home_abbr, home_abbr)
         game      = f"{away_name} @ {home_name}"
 
-        # 防止重複：這場已有未結算的 halftime 下注記錄就跳過（不限日期）
+        # 防止重複：今天這場已有 halftime 下注記錄就跳過
+        today_str = str(date.today())
         for acct in [self.pregame_account, self.halftime_account]:
             for t in acct._trades:
                 if (t.get("trigger") == "halftime" and
                     t.get("game") == game and
-                    t.get("result") is None):
-                    log.info(f"  [HALFTIME] {game} 已有未結算下注，跳過重複")
+                    t.get("result") is None and
+                    t.get("date") == today_str):
+                    log.info(f"  [HALFTIME] {game} 今天已下注，跳過重複")
                     return
 
         feat_df = build_features(
@@ -684,7 +686,10 @@ def run_live(cfg: TraderConfig):
 
         for acct in [trader.pregame_account, trader.halftime_account]:
             for t in acct._trades:
-                if t.get("trigger") == "pregame" and t.get("result") is None:
+                # 只跳過今天的未結算記錄（避免昨天同隊比賽誤擋今天）
+                if (t.get("trigger") == "pregame" and
+                    t.get("result") is None and
+                    t.get("date") == str(date.today())):
                     g = t.get("game", "")
                     if " @ " in g:
                         away, home = g.split(" @ ", 1)
@@ -693,7 +698,7 @@ def run_live(cfg: TraderConfig):
                         seen_pregame.add(f"{away_abbr}@{home_abbr}")
 
         if seen_pregame:
-            log.info(f"pregame_loop：已有未結算賽前下注 {len(seen_pregame)} 場，跳過重複")
+            log.info(f"pregame_loop：今天已下注 {len(seen_pregame)} 場，跳過重複")
 
         while True:
             try:

@@ -866,6 +866,104 @@ def test_ev_and_edge():
 
     return True
 
+
+# ── Test 14: polymarket_trader v10 get_trades 詳細測試 ────────
+
+def test_polymarket_trader_v10():
+    print("\n【Test 14】polymarket_trader v10 - get_trades 詳細測試")
+    import os
+    from py_clob_client.clob_types import TradeParams
+    from src.live.polymarket_trader import PolymarketTrader
+
+    trader = PolymarketTrader(dry_run=False)
+    funder = os.getenv("POLYMARKET_FUNDER", "")
+    client = trader._client
+
+    if not client:
+        warn("CLOB client 未初始化，跳過")
+        return True
+
+    # ── 14-1: get_trades 基本查詢 ─────────────────────────────
+    print("  ▶ 14-1 get_trades 基本查詢")
+    trades = client.get_trades(params=TradeParams(maker_address=funder))
+
+    if not isinstance(trades, list):
+        fail(f"  get_trades 回傳非 list：{type(trades)}")
+        return False
+    ok(f"  get_trades 回傳 list（{len(trades)} 筆）")
+
+    if not trades:
+        warn("  沒有成交記錄，跳過後續測試")
+        return True
+
+    t0 = trades[0]
+    for field in ["taker_order_id", "asset_id", "price", "size", "status"]:
+        if field in t0:
+            ok(f"  記錄有 {field}={str(t0[field])[:20]}")
+        else:
+            fail(f"  記錄缺少 {field}")
+
+    # ── 14-2: 雙重比對邏輯 ────────────────────────────────────
+    print("  ▶ 14-2 雙重比對邏輯")
+    real_oid   = t0.get("taker_order_id")
+    real_asset = t0.get("asset_id")
+
+    def find_trade(oid, asset_id):
+        for t in trades:
+            if t.get("taker_order_id") == oid and t.get("asset_id") == asset_id:
+                return t
+        return None
+
+    # 正確比對
+    matched = find_trade(real_oid, real_asset)
+    if matched:
+        ok(f"  正確比對（order+asset）→ 找到 price={matched.get('price')}")
+    else:
+        fail("  正確比對失敗")
+
+    # 錯誤：asset_id 錯
+    fake_asset = "9" * 49
+    if find_trade(real_oid, fake_asset) is None:
+        ok("  asset_id 錯 → 正確拒絕")
+    else:
+        fail("  asset_id 錯但仍找到，雙重比對失效")
+
+    # 錯誤：order_id 錯
+    fake_oid = "0x" + "f" * 62
+    if find_trade(fake_oid, real_asset) is None:
+        ok("  order_id 錯 → 正確拒絕")
+    else:
+        fail("  order_id 錯但仍找到，雙重比對失效")
+
+    # ── 14-3: pregame/halftime 不互相干擾 ─────────────────────
+    print("  ▶ 14-3 pregame/halftime 不互相干擾")
+    diff_trades = [t for t in trades if t.get("asset_id") != real_asset]
+
+    if diff_trades:
+        t1 = diff_trades[0]
+        r0 = find_trade(t0.get("taker_order_id"), t0.get("asset_id"))
+        r1 = find_trade(t1.get("taker_order_id"), t1.get("asset_id"))
+
+        if r0 and r1 and r0.get("taker_order_id") != r1.get("taker_order_id"):
+            ok(f"  兩筆各自獨立：price0={r0.get('price')}  price1={r1.get('price')}")
+        else:
+            fail("  兩筆記錄干擾或未找到")
+    else:
+        warn("  最近記錄 asset_id 相同，跳過干擾測試")
+
+    # ── 14-4: 找不到記錄時回退 market_price ──────────────────
+    print("  ▶ 14-4 找不到記錄 → 回退 market_price")
+    fallback_p = 0.55
+    not_found  = find_trade("0x" + "f" * 62, "9" * 49)
+    actual     = float(not_found.get("price", fallback_p)) if not_found else fallback_p
+
+    if actual == fallback_p:
+        ok(f"  找不到時回退 market_price={fallback_p}")
+    else:
+        fail(f"  回退失敗：actual={actual}  expected={fallback_p}")
+
+    return True
+
 # ── 清理 & 主程式 ─────────────────────────────────────────────
 
 def cleanup():
@@ -893,6 +991,7 @@ def main():
         ("$1 真實下單",           test_real_order_1usdc),
         ("重啟後防止重複下注",    test_dedup_on_restart),
         ("EV 公式與 edge 記錄",   test_ev_and_edge),
+        ("get_trades 雙重比對",   test_polymarket_trader_v10),
     ]
 
     results = []

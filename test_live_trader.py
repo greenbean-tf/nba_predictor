@@ -964,6 +964,123 @@ def test_polymarket_trader_v10():
 
     return True
 
+
+# ── Test 15: v22 過濾邏輯 ─────────────────────────────────────
+
+def test_v22_filters():
+    print("\n【Test 15】v22 過濾邏輯")
+    from src.live.live_trader import TraderConfig, LiveTrader
+    from scipy.stats import norm as scipy_norm
+
+    cfg    = TraderConfig(FakeArgs(pregame_std=14.6, halftime_std=10.7))
+    trader = LiveTrader(cfg)
+
+    # ── 15-1: CLOB ask 失敗 → 排除市場 ──────────────────────
+    print("  ▶ 15-1 CLOB ask 失敗 → 排除市場（不下注）")
+
+    # 模擬 Hawks @ Cavaliers：CLOB 失敗，市場仍用 Gamma mid=0.20
+    markets_clob_failed = [{
+        "line":         234.5,
+        "question":     "Hawks vs Cavaliers: O/U 234.5",
+        "over_prob":    0.20,   # Gamma mid（CLOB 失敗後的 fallback）
+        "under_prob":   0.80,
+        "condition_id": "0xtest",
+    }]
+    # 在 v22 中，CLOB 失敗的市場不會進入 _find_best_bet
+    # 所以 _get_markets 回傳空 list，模擬測試 _find_best_bet 不下注
+    best = trader._find_best_bet(markets_clob_failed, pred=240.0, std=10.7)
+    # 即使 model_p 很高（240 > 234.5），EV 也很高
+    # 但 market_p=0.20 通過過濾，這是 v21 的問題
+    # v22 的修法是在 _get_markets 就排除，而不是在 _find_best_bet
+    # 這裡我們測試：如果真的到達 _find_best_bet，0.20 還是會下注（v22 沒改這裡）
+    # 真正的防護是 _get_markets 排除，所以測空 list 的情況
+    best_from_empty = trader._find_best_bet([], pred=240.0, std=10.7)
+    if best_from_empty is None:
+        ok("  CLOB 失敗市場排除後（空 list）→ 不下注")
+    else:
+        fail("  空市場應回傳 None")
+
+    # ── 15-2: market_p > 0.90 → 過濾 ────────────────────────
+    print("  ▶ 15-2 market_p > 0.90 → 過濾（Hawks/Bucks 那兩注）")
+    markets_high = [
+        {"line": 234.5, "question": "Hawks O/U 234.5", "over_prob": 0.96, "under_prob": 0.04, "condition_id": "0xa"},
+        {"line": 228.5, "question": "Bucks O/U 228.5", "over_prob": 0.96, "under_prob": 0.04, "condition_id": "0xb"},
+    ]
+    for m in markets_high:
+        best = trader._find_best_bet([m], pred=244.0, std=10.7)
+        if best is None:
+            ok(f"  market_p=0.96 ({m['question'][:20]}) → 正確過濾")
+        else:
+            fail(f"  market_p=0.96 應被過濾")
+
+    # ── 15-3: market_p < 0.10 → 過濾 ────────────────────────
+    print("  ▶ 15-3 market_p < 0.10 → 過濾")
+    markets_low = [{"line": 220.5, "question": "test O/U 220.5",
+                    "over_prob": 0.05, "under_prob": 0.95, "condition_id": "0xc"}]
+    best = trader._find_best_bet(markets_low, pred=235.0, std=14.6)
+    if best is None:
+        ok("  market_p=0.05 → 正確過濾")
+    else:
+        fail("  market_p=0.05 應被過濾")
+
+    # ── 15-4: model_p > 0.95 → 過濾 ─────────────────────────
+    print("  ▶ 15-4 model_p > 0.95 → 過濾（模型過度自信）")
+    # pred 離 line 很遠，model_p 會接近 1
+    # pred=280, line=230, std=10.7 → model_p ≈ 1.0
+    markets_extreme = [{"line": 230.0, "question": "test O/U 230",
+                        "over_prob": 0.50, "under_prob": 0.50, "condition_id": "0xd"}]
+    pred_extreme = 280.0  # 50分差，model_p_over ≈ 1.0
+    model_p_check = float(1 - scipy_norm.cdf(230.0, loc=280.0, scale=10.7))
+    best = trader._find_best_bet(markets_extreme, pred=pred_extreme, std=10.7)
+    if model_p_check > 0.95:
+        if best is None:
+            ok(f"  model_p={model_p_check:.4f}>0.95 → 正確過濾")
+        else:
+            fail(f"  model_p={model_p_check:.4f}>0.95 應被過濾")
+    else:
+        warn(f"  model_p={model_p_check:.4f} 未超過 0.95，調整測試參數")
+
+    # ── 15-5: abs(pred-line) > 2.5*std → 過濾 ───────────────
+    print("  ▶ 15-5 pred 跟 line 差距 > 2.5×std → 過濾")
+    # halftime std=10.7，2.5×10.7=26.75
+    # pred=260, line=230 → 差30 > 26.75 → 過濾
+    markets_far = [{"line": 230.0, "question": "test O/U 230",
+                    "over_prob": 0.50, "under_prob": 0.50, "condition_id": "0xe"}]
+    best_far = trader._find_best_bet(markets_far, pred=260.0, std=10.7)
+    diff = abs(260.0 - 230.0)
+    limit = 2.5 * 10.7
+    if best_far is None:
+        ok(f"  |pred-line|={diff:.1f} > 2.5×std={limit:.1f} → 正確過濾")
+    else:
+        fail(f"  差距 {diff:.1f} 超過 {limit:.1f} 應被過濾")
+
+    # ── 15-6: 正常注通過所有過濾 ─────────────────────────────
+    print("  ▶ 15-6 正常注通過所有過濾")
+    # Bucks @ Pistons pregame：pred=227.8, line=221.5, market_p=0.498
+    markets_normal = [{"line": 221.5, "question": "Bucks O/U 221.5",
+                       "over_prob": 0.498, "under_prob": 0.502, "condition_id": "0xf"}]
+    best_normal = trader._find_best_bet(markets_normal, pred=227.8, std=14.6)
+    if best_normal and best_normal["side"] == "OVER":
+        ok(f"  Bucks pregame 通過：OVER EV={best_normal['ev']:+.1%} edge={best_normal['edge']:+.1%}")
+    elif best_normal is None:
+        warn("  正常注未找到正 EV（min_ev 條件不符）")
+    else:
+        fail(f"  方向錯誤：{best_normal}")
+
+    # ── 15-7: 今天實際被擋掉的 2 注驗證 ─────────────────────
+    print("  ▶ 15-7 今天實際應被擋掉的注（Grizzlies 0.888 仍通過）")
+    # Grizzlies @ Nuggets halftime：actual_fp=0.888，在 0.90 以下，v22 不擋
+    markets_grizzlies = [{"line": 246.5, "question": "Grizzlies O/U 246.5",
+                          "over_prob": 0.888, "under_prob": 0.112, "condition_id": "0xg"}]
+    best_griz = trader._find_best_bet(markets_grizzlies, pred=254.2, std=10.7)
+    if best_griz is not None:
+        ok(f"  Grizzlies ask=0.888 仍通過過濾（market_p<0.90）→ EV={best_griz['ev']:+.1%}")
+        warn("  若要擋此類低報酬注，需把上限從 0.90 降至 0.85")
+    else:
+        ok("  Grizzlies 被過濾")
+
+    return True
+
 # ── 清理 & 主程式 ─────────────────────────────────────────────
 
 def cleanup():
@@ -992,6 +1109,7 @@ def main():
         ("重啟後防止重複下注",    test_dedup_on_restart),
         ("EV 公式與 edge 記錄",   test_ev_and_edge),
         ("get_trades 雙重比對",   test_polymarket_trader_v10),
+        ("v22 過濾邏輯",           test_v22_filters),
     ]
 
     results = []

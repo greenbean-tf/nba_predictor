@@ -279,41 +279,66 @@ class LiveTrader:
                    if (h in m["home_team"].lower() or h in m["away_team"].lower())
                    and (a in m["away_team"].lower() or a in m["home_team"].lower())]
 
-        # 用 CLOB orderbook 取得即時 ask 價，取代 Gamma API 的 mid price
+        # 只使用 CLOB ask price，Gamma mid 僅供初始，CLOB 失敗則排除該市場
         trader = self._get_trader()
+        valid_markets = []
+
         if trader and trader._client:
             for m in matched:
-                try:
-                    for outcome, token_key in [("Over", "token_id_over"), ("Under", "token_id_under")]:
-                        token_id = m.get(token_key)
-                        if not token_id:
-                            # 從 condition_id 取
-                            token_id = trader.get_token_id(m["condition_id"], outcome)
+                clob_ok = True
+                for outcome, token_key, prob_key, opp_key in [
+                    ("Over",  "token_id_over",  "over_prob",  "under_prob"),
+                    ("Under", "token_id_under", "under_prob", "over_prob"),
+                ]:
+                    MAX_RETRIES = 3
+                    RETRY_WAIT  = 5
+                    ask_price   = None
+
+                    for attempt in range(1, MAX_RETRIES + 1):
+                        try:
+                            token_id = m.get(token_key) or trader.get_token_id(m["condition_id"], outcome)
                             if token_id:
                                 m[token_key] = token_id
-                        if token_id:
-                            book = trader._client.get_order_book(token_id)
-                            if book:
-                                # 支援 dict 和 OrderBookSummary 物件兩種格式
-                                if isinstance(book, dict):
-                                    asks = book.get("asks", [])
-                                else:
-                                    asks = getattr(book, "asks", []) or []
-                                if asks:
-                                    # asks 從高到低排序，最後一個是 best ask（最低賣出價）
-                                    a_best = asks[-1]
-                                    best_ask = float(a_best.get("price", 0) if isinstance(a_best, dict) else getattr(a_best, "price", 0))
-                                    if best_ask > 0:
-                                        if outcome == "Over":
-                                            m["over_prob"]  = best_ask
-                                            m["under_prob"] = round(1 - best_ask, 4)
-                                        else:
-                                            m["under_prob"] = best_ask
-                                            m["over_prob"]  = round(1 - best_ask, 4)
-                except Exception as e:
-                    log.debug(f"  CLOB ask 取得失敗 ({m.get('question','')}): {e}")
+                                book = trader._client.get_order_book(token_id)
+                                if book:
+                                    asks = book.get("asks", []) if isinstance(book, dict) else (getattr(book, "asks", []) or [])
+                                    if asks:
+                                        # asks 從高到低，最後一個是 best ask
+                                        a_best    = asks[-1]
+                                        ask_price = float(a_best.get("price", 0) if isinstance(a_best, dict) else getattr(a_best, "price", 0))
+                                        if ask_price > 0:
+                                            break
+                        except Exception as e:
+                            log.debug(f"  CLOB ask 嘗試 {attempt}/{MAX_RETRIES}（{outcome}）失敗：{e}")
 
-        return matched
+                        if attempt < MAX_RETRIES:
+                            time.sleep(RETRY_WAIT)
+
+                    if ask_price and ask_price > 0:
+                        m[prob_key] = ask_price
+                        m[opp_key]  = round(1 - ask_price, 4)
+                    else:
+                        log.warning(f"  CLOB ask 取得失敗（{m.get('question','')} {outcome}），排除此市場")
+                        clob_ok = False
+                        break
+
+                if clob_ok:
+                    # 確認 ask 有足夠流動性（asks 數量 >= 3）
+                    token_id = m.get("token_id_over")
+                    if token_id:
+                        try:
+                            book = trader._client.get_order_book(token_id)
+                            asks = book.get("asks", []) if isinstance(book, dict) else (getattr(book, "asks", []) or [])
+                            if len(asks) < 3:
+                                log.info(f"  流動性不足（asks={len(asks)}），排除 {m.get('question','')}")
+                                clob_ok = False
+                        except:
+                            pass
+
+                if clob_ok:
+                    valid_markets.append(m)
+
+        return valid_markets
 
     def _find_best_bet(self, markets: list, pred: float, std: float) -> dict | None:
         """找出 EV 最高的一注（方向一致 + 市場價格合理）"""
@@ -326,9 +351,18 @@ class LiveTrader:
                 ("OVER",  model_over,     m["over_prob"]),
                 ("UNDER", 1 - model_over, m["under_prob"]),
             ]:
+                # 方向一致
                 if side == "OVER"  and pred <= line: continue
                 if side == "UNDER" and pred >= line: continue
+
+                # 市場價格極端過濾（CLOB ask 超出合理範圍）
                 if market_p < 0.10 or market_p > 0.90: continue
+
+                # model_p 極端過濾（模型過度自信，不可靠）
+                if model_p > 0.95 or model_p < 0.05: continue
+
+                # pred 跟 line 差距過大過濾（超過 2.5 個標準差，模型可能失準）
+                if abs(pred - line) > 2.5 * std: continue
 
                 edge = model_p - market_p
                 ev   = model_p / market_p - 1   # 真實 EV（賠率意義）
@@ -536,15 +570,13 @@ class LiveTrader:
         home_name = ABBR_TO_FULL.get(home_abbr, home_abbr)
         game      = f"{away_name} @ {home_name}"
 
-        # 防止重複：今天這場已有 halftime 下注記錄就跳過
-        today_str = str(date.today())
+        # 防止重複：這場已有未結算的 halftime 下注記錄就跳過（不限日期）
         for acct in [self.pregame_account, self.halftime_account]:
             for t in acct._trades:
                 if (t.get("trigger") == "halftime" and
                     t.get("game") == game and
-                    t.get("result") is None and
-                    t.get("date") == today_str):
-                    log.info(f"  [HALFTIME] {game} 今天已下注，跳過重複")
+                    t.get("result") is None):
+                    log.info(f"  [HALFTIME] {game} 已有未結算下注，跳過重複")
                     return
 
         feat_df = build_features(
@@ -686,10 +718,7 @@ def run_live(cfg: TraderConfig):
 
         for acct in [trader.pregame_account, trader.halftime_account]:
             for t in acct._trades:
-                # 只跳過今天的未結算記錄（避免昨天同隊比賽誤擋今天）
-                if (t.get("trigger") == "pregame" and
-                    t.get("result") is None and
-                    t.get("date") == str(date.today())):
+                if t.get("trigger") == "pregame" and t.get("result") is None:
                     g = t.get("game", "")
                     if " @ " in g:
                         away, home = g.split(" @ ", 1)
@@ -698,7 +727,7 @@ def run_live(cfg: TraderConfig):
                         seen_pregame.add(f"{away_abbr}@{home_abbr}")
 
         if seen_pregame:
-            log.info(f"pregame_loop：今天已下注 {len(seen_pregame)} 場，跳過重複")
+            log.info(f"pregame_loop：已有未結算賽前下注 {len(seen_pregame)} 場，跳過重複")
 
         while True:
             try:

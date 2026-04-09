@@ -94,7 +94,7 @@ Ensemble 輸出預測總分
 
 ## digital ocean
 更新 serve code
-ssh root@165.245.224.93
+ssh root@168.144.73.250
 bash /root/nba_predictor/deploy.sh
 
 # auto service
@@ -109,6 +109,12 @@ systemctl list-timers | grep nba
 # 看 log
 tail -f /root/nba_predictor/logs/live_trader.log
 cat /root/nba_predictor/logs/live_trader.log
+# 下載到本機(windows 執行)
+scp root@168.144.73.250:/root/nba_predictor/logs/live_trader.log C:\Users\User\Desktop\code\nba_predictor\live_trader.log
+
+scp root@168.144.73.250:/root/nba_predictor/logs/live_trades_pregame.jsonl C:\Users\User\Desktop\code\nba_predictor\live_trades_pregame.jsonl
+
+scp root@168.144.73.250:/root/nba_predictor/logs/live_trades_halftime.jsonl C:\Users\User\Desktop\code\nba_predictor\live_trades_halftime.jsonl
 
 # 看服務狀態
 systemctl status nba_trader

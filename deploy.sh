@@ -21,8 +21,8 @@ line() { echo -e "\n${GREEN}═════════════════�
 REPO="git@github.com:greenbean-tf/nba_predictor.git"
 APP_DIR="/root/nba_predictor"
 LOG_DIR="$APP_DIR/logs"
-TIMER_HOUR="04"    # 台灣時間幾點啟動（NBA 比賽約 04:40）
-TIMER_MIN="30"
+TIMER_HOUR="00"    # 台灣時間幾點啟動（NBA 比賽約 00:40）
+TIMER_MIN="33"
 CAPITAL="100"
 KELLY="0.8"
 PRE_STD="14.6"
@@ -131,7 +131,7 @@ WorkingDirectory=$APP_DIR
 ExecStart=/usr/bin/python3 -u src/live/live_trader.py --mode both --capital $CAPITAL --kelly $KELLY --pregame-std $PRE_STD --halftime-std $HALF_STD --live --yes
 Restart=on-failure
 RestartSec=30
-StandardOutput=append:$LOG_DIR/live_trader.log
+StandardOutput=null
 StandardError=append:$LOG_DIR/live_trader.log
 
 [Install]

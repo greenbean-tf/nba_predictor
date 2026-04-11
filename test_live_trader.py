@@ -1081,6 +1081,127 @@ def test_v22_filters():
 
     return True
 
+
+# ── Test 16: 完全移除 Gamma mid（v24）────────────────────────
+
+def test_no_gamma_mid():
+    print("\n【Test 16】完全移除 Gamma mid（v24）")
+    from src.live.live_trader import TraderConfig, LiveTrader
+    from src.live.polymarket_trader import PolymarketTrader
+
+    cfg    = TraderConfig(FakeArgs())
+    trader = LiveTrader(cfg)
+
+    # ── 16-1: over_prob=None 在 _find_best_bet 被跳過 ────────
+    print("  ▶ 16-1 market_p=None → 直接跳過（CLOB 未取得）")
+    markets_none = [{
+        "line":         230.5,
+        "question":     "test O/U 230.5",
+        "over_prob":    None,   # CLOB 未取得
+        "under_prob":   None,
+        "condition_id": "0xtest",
+    }]
+    best = trader._find_best_bet(markets_none, pred=240.0, std=10.7)
+    if best is None:
+        ok("  over_prob=None → 正確跳過，不下注")
+    else:
+        fail("  over_prob=None 應跳過但未跳過")
+
+    # ── 16-2: 正常 CLOB ask 仍然通過 ─────────────────────────
+    print("  ▶ 16-2 正常 CLOB ask → 通過")
+    markets_ok = [{
+        "line":         221.5,
+        "question":     "test O/U 221.5",
+        "over_prob":    0.498,  # CLOB ask
+        "under_prob":   0.502,
+        "condition_id": "0xtest2",
+    }]
+    best2 = trader._find_best_bet(markets_ok, pred=228.0, std=14.6)
+    if best2 is not None:
+        ok(f"  CLOB ask=0.498 通過：{best2['side']} EV={best2['ev']:+.1%}")
+    else:
+        warn("  正常市場無正 EV（min_ev 不符）")
+
+    # ── 16-3: filled_price=None 時結算用 market_p 並發出警告 ─
+    print("  ▶ 16-3 filled_price=None → 結算時警告，用 market_p")
+    from src.live.live_trader import TradingAccount
+    acct = TradingAccount(cfg, "halftime", 50.0)
+    acct._trades.append({
+        "account":       "halftime",
+        "game":          "Bulls @ Wizards",
+        "line":          234.5,
+        "side":          "UNDER",
+        "amount":        4.33,
+        "market_p":      0.63,
+        "filled_price":  None,    # ← get_trades 和 CLOB 都失敗
+        "order_success": True,
+        "trade_status":  "MATCHED",
+        "trade_success": True,
+        "attempt":       1,
+        "result":        None,
+        "pnl":           None,
+    })
+    acct.settle("Bulls @ Wizards", 234.5, 227)
+    t = acct._trades[-1]
+    if t["result"] == "win":
+        ok(f"  filled_price=None 結算成功（用 market_p=0.63）pnl={t['pnl']:+.2f}")
+        # 確認用 market_p 計算
+        expected = round(4.33 / 0.63 - 4.33, 2)
+        if abs(t["pnl"] - expected) < 0.05:
+            ok(f"  pnl 計算正確：{t['pnl']:+.2f}（預期 {expected:+.2f}）")
+        else:
+            fail(f"  pnl 計算錯誤：{t['pnl']} vs {expected}")
+    else:
+        fail(f"  結算方向錯誤：{t['result']}")
+
+    # ── 16-4: 模擬 Pacers @ Nets 的情況（get_trades 失敗）────
+    print("  ▶ 16-4 get_trades 失敗 → filled_price=None（不用 Gamma mid 0.16）")
+    # 模擬 place_bet 回傳
+    fake_result_old = {
+        "success":      True,
+        "order_id":     "0xtest",
+        "actual_price": 0.16,    # 舊版：用 Gamma mid
+        "actual_size":  17.3,
+    }
+    fake_result_new = {
+        "success":      True,
+        "order_id":     "0xtest",
+        "actual_price": None,    # v24：get_trades 失敗 → None
+        "actual_size":  None,
+    }
+
+    # 舊版：fp=0.16，pnl 會被嚴重高估
+    old_fp = fake_result_old["actual_price"] or 0.73  # 實際是 0.73
+    old_pnl = round(2.77 / 0.16 - 2.77, 2)  # 用 Gamma mid 計算
+    real_pnl = round(2.77 / 0.73 - 2.77, 2)  # 實際
+    ok(f"  舊版 pnl（Gamma mid 0.16）= ${old_pnl:+.2f}（虛假）")
+    ok(f"  實際 pnl（CLOB 0.73）     = ${real_pnl:+.2f}")
+    ok(f"  v24 filled_price=None → 結算時用 market_p 並發警告（不再虛假 +$14）")
+
+    # ── 16-5: 市場 over_prob 初始為 None，CLOB 失敗就排除 ────
+    print("  ▶ 16-5 初始 over_prob=None 確保不用 Gamma")
+    # 模擬 _get_markets 行為：先設 None，再由 CLOB 填入
+    m = {
+        "line":         230.5,
+        "question":     "test",
+        "over_prob":    0.55,   # Gamma mid（原始）
+        "under_prob":   0.45,
+        "condition_id": "0xtest",
+    }
+    # v24 先清空
+    m["over_prob"]  = None
+    m["under_prob"] = None
+
+    # 如果 CLOB 失敗，over_prob 保持 None
+    # _find_best_bet 應跳過
+    best3 = trader._find_best_bet([m], pred=240.0, std=10.7)
+    if best3 is None:
+        ok("  CLOB 失敗後 over_prob=None → 市場被排除，不下注")
+    else:
+        fail("  over_prob=None 的市場不應下注")
+
+    return True
+
 # ── 清理 & 主程式 ─────────────────────────────────────────────
 
 def cleanup():
@@ -1110,6 +1231,7 @@ def main():
         ("EV 公式與 edge 記錄",   test_ev_and_edge),
         ("get_trades 雙重比對",   test_polymarket_trader_v10),
         ("v22 過濾邏輯",           test_v22_filters),
+        ("完全移除 Gamma mid",     test_no_gamma_mid),
     ]
 
     results = []

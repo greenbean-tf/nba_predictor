@@ -232,18 +232,35 @@ class PolymarketTrader:
                                 matched_trade = t
                                 break
                     if matched_trade:
-                        actual_price = float(matched_trade.get("price", market_price))
+                        actual_price = float(matched_trade.get("price", 0))
                         actual_size  = float(matched_trade.get("size",  shares))
                         result["actual_price"] = actual_price
                         result["actual_size"]  = actual_size
                         log.info(f"  實際成交：price={actual_price:.4f}  size={actual_size:.4f}")
                     else:
-                        result["actual_price"] = market_price
-                        result["actual_size"]  = shares
-                        log.warning(f"  找不到成交記錄，使用 market_price={market_price:.4f}")
+                        # get_trades 失敗 → 查 CLOB ask 當備用，不用 Gamma mid
+                        clob_actual = None
+                        try:
+                            book = self._client.get_order_book(token_id)
+                            if book:
+                                asks = book.get("asks", []) if isinstance(book, dict) else (getattr(book, "asks", []) or [])
+                                if asks:
+                                    a_best = asks[-1]
+                                    clob_actual = float(a_best.get("price", 0) if isinstance(a_best, dict) else getattr(a_best, "price", 0))
+                        except Exception as e:
+                            log.debug(f"  備用 CLOB ask 查詢失敗：{e}")
+
+                        if clob_actual and clob_actual > 0:
+                            result["actual_price"] = clob_actual
+                            result["actual_size"]  = round(amount_usdc / clob_actual, 4)
+                            log.warning(f"  get_trades 失敗，使用 CLOB ask={clob_actual:.4f}")
+                        else:
+                            result["actual_price"] = None   # 不回退 Gamma mid
+                            result["actual_size"]  = None
+                            log.warning(f"  get_trades 和 CLOB ask 都失敗，filled_price=None")
                 except Exception as e:
                     log.warning(f"  查詢成交價失敗：{e}")
-                    result["actual_price"] = market_price
+                    result["actual_price"] = None  # dry_run: no actual fill
                     result["actual_size"]  = shares
             else:
                 result["error"] = resp.get("errorMsg", str(resp))

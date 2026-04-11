@@ -213,8 +213,11 @@ class TradingAccount:
                 t.get("line") == line and
                 t.get("result") is None):
                 won = (actual_total > line) if t["side"] == "OVER" else (actual_total < line)
-                # 用實際成交價計算損益（優先 filled_price，否則 market_p）
-                fp  = t.get("filled_price") or t.get("market_p", 0.5)
+                # 用實際成交價計算損益（必須有 filled_price，否則用 market_p 但標記警告）
+                fp = t.get("filled_price")
+                if fp is None:
+                    fp = t.get("market_p", 0.5)
+                    log.warning(f"  結算用 market_p={fp:.4f}（filled_price 未記錄，可能不準確）")
                 pnl = round((t["amount"] / fp - t["amount"]), 2) if won else -t["amount"]
                 t["result"]       = "win" if won else "loss"
                 t["pnl"]          = round(pnl, 2)
@@ -279,7 +282,12 @@ class LiveTrader:
                    if (h in m["home_team"].lower() or h in m["away_team"].lower())
                    and (a in m["away_team"].lower() or a in m["home_team"].lower())]
 
-        # 只使用 CLOB ask price，Gamma mid 僅供初始，CLOB 失敗則排除該市場
+        # 完全使用 CLOB ask price，不使用 Gamma mid
+        # Gamma 的 over_prob/under_prob 先清空，必須由 CLOB 填入
+        for m in matched:
+            m["over_prob"]  = None
+            m["under_prob"] = None
+
         trader = self._get_trader()
         valid_markets = []
 
@@ -351,6 +359,9 @@ class LiveTrader:
                 ("OVER",  model_over,     m["over_prob"]),
                 ("UNDER", 1 - model_over, m["under_prob"]),
             ]:
+                # CLOB ask 未取得（None）→ 跳過
+                if market_p is None: continue
+
                 # 方向一致
                 if side == "OVER"  and pred <= line: continue
                 if side == "UNDER" and pred >= line: continue
@@ -474,7 +485,7 @@ class LiveTrader:
                 "pred":          round(pred, 1),
                 "model_p":       round(best["model_p"], 4),
                 "market_p":      round(best["market_p"], 4),
-                "filled_price":  round(actual_price, 4) if actual_price else round(best["market_p"], 4),
+                "filled_price":  round(actual_price, 4) if actual_price else None,
                 "edge":          round(best.get("edge", best["model_p"] - best["market_p"]), 4),
                 "ev":            round(best["ev"], 4),
                 "amount":        round(amount, 2),

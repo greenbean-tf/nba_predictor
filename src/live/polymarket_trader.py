@@ -223,20 +223,26 @@ class PolymarketTrader:
                     trades = self._client.get_trades(
                         params=TradeParams(maker_address=funder)
                     )
-                    # 雙重比對：taker_order_id（order id）+ asset_id（token id）
-                    matched_trade = None
+                    # 雙重比對全部成交記錄（FOK 可能拆成多筆）
+                    # 找出這筆訂單的所有成交記錄（一筆 FOK 可能拆成多筆）
+                    matched_trades = []
                     if trades and isinstance(trades, list):
                         for t in trades:
                             if (t.get("taker_order_id") == oid and
                                 t.get("asset_id") == token_id):
-                                matched_trade = t
-                                break
-                    if matched_trade:
-                        actual_price = float(matched_trade.get("price", 0))
-                        actual_size  = float(matched_trade.get("size",  shares))
+                                matched_trades.append(t)
+
+                    if matched_trades:
+                        # 計算真實 VWAP（加權均價）
+                        total_cost = sum(float(t.get("price", 0)) * float(t.get("size", 0))
+                                        for t in matched_trades)
+                        total_size = sum(float(t.get("size", 0)) for t in matched_trades)
+                        actual_price = round(total_cost / total_size, 6) if total_size > 0 else 0
+                        actual_size  = round(total_size, 6)
                         result["actual_price"] = actual_price
                         result["actual_size"]  = actual_size
-                        log.info(f"  實際成交：price={actual_price:.4f}  size={actual_size:.4f}")
+                        n = len(matched_trades)
+                        log.info(f"  實際成交（{n}筆均價）：vwap={actual_price:.4f}  size={actual_size:.4f}")
                     else:
                         # get_trades 失敗 → 查 CLOB ask 當備用，不用 Gamma mid
                         clob_actual = None
@@ -245,8 +251,9 @@ class PolymarketTrader:
                             if book:
                                 asks = book.get("asks", []) if isinstance(book, dict) else (getattr(book, "asks", []) or [])
                                 if asks:
-                                    a_best = asks[-1]
-                                    clob_actual = float(a_best.get("price", 0) if isinstance(a_best, dict) else getattr(a_best, "price", 0))
+                                    # best ask = 最低賣出價
+                                    prices = [float(a.get("price", 0) if isinstance(a, dict) else getattr(a, "price", 0)) for a in asks]
+                                    clob_actual = min(p for p in prices if p > 0) if any(p > 0 for p in prices) else 0
                         except Exception as e:
                             log.debug(f"  備用 CLOB ask 查詢失敗：{e}")
 

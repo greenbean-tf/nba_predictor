@@ -210,8 +210,18 @@ class PolymarketTrader:
             resp   = self._client.post_order(signed, OrderType.FOK)
 
             if resp.get("success"):
-                oid = resp.get("orderID", "")
-                log.info(f"下單成功 ✅ {outcome} | ${amount_usdc:.2f} FOK | order={oid}")
+                oid    = resp.get("orderID", "")
+                status = resp.get("status", "").lower()  # matched / unmatched / delayed
+
+                # FOK 未成交（unmatched）→ 訂單取消，錢沒扣，不記錄
+                if status == "unmatched":
+                    log.warning(f"FOK 未成交（unmatched），訂單取消 | order={oid}")
+                    result["success"]   = False
+                    result["order_id"]  = oid
+                    result["error"]     = "FOK unmatched"
+                    return result
+
+                log.info(f"下單成功 ✅ {outcome} | ${amount_usdc:.2f} FOK | order={oid} | status={status}")
                 result["success"]  = True
                 result["order_id"] = oid
 

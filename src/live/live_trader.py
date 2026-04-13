@@ -414,15 +414,24 @@ class LiveTrader:
                 # pred 跟 line 差距過大過濾（超過 2.5 個標準差，模型可能失準）
                 if abs(pred - line) > 2.5 * std: continue
 
-                edge = model_p - market_p
-                ev   = model_p / market_p - 1   # 真實 EV（賠率意義）
+                # EV/edge 用估算均價（est_fill）計算，不用 best ask
+                # market_p 只用來記錄市場報價，不影響下注決策
+                edge      = model_p - est_fill
+                ev        = model_p / est_fill - 1   # 真實 EV（用實際成交均價）
+                edge_mkt  = model_p - market_p        # 純供記錄用
+                ev_mkt    = model_p / market_p - 1    # 純供記錄用
+
                 if ev >= self.cfg.min_ev and edge >= self.cfg.min_edge:
                     if best is None or ev > best["ev"]:
                         best = {
                             "line": line, "side": side,
-                            "model_p": model_p, "market_p": market_p,
-                            "edge": round(edge, 4),
-                            "ev": round(ev, 4),
+                            "model_p":  model_p,
+                            "market_p": market_p,   # best ask（記錄用）
+                            "est_fill": est_fill,   # 估算均價（決策用）
+                            "edge":     round(edge, 4),
+                            "ev":       round(ev, 4),
+                            "edge_mkt": round(edge_mkt, 4),
+                            "ev_mkt":   round(ev_mkt, 4),
                             "condition_id": m["condition_id"],
                         }
         return best
@@ -448,7 +457,7 @@ class LiveTrader:
             except Exception as e:
                 log.warning(f"  無法查詢餘額（{e}），使用模擬帳戶計算")
 
-            amount = account.kelly_amount(best["model_p"], best["market_p"],
+            amount = account.kelly_amount(best["model_p"], best["est_fill"],
                                           real_balance=real_balance)
             if amount < 1.0:
                 log.info(f"  下注金額 ${amount:.2f} 過小，跳過")
@@ -464,7 +473,9 @@ class LiveTrader:
             log.info(
                 f"  [{trigger}] {mode_str} BET{attempt_str} {game} "
                 f"{best['line']} {best['side']} ${amount:.2f} | "
-                f"EV={best['ev']:+.1%} | avail=${account.available:.2f}"
+                f"EV={best['ev']:+.1%}(vwap={best['est_fill']:.2f}) "
+                f"mkt_ev={best['ev_mkt']:+.1%}(ask={best['market_p']:.2f}) | "
+                f"avail=${account.available:.2f}"
             )
 
             # 下單
@@ -524,6 +535,7 @@ class LiveTrader:
                 "pred":          round(pred, 1),
                 "model_p":       round(best["model_p"], 4),
                 "market_p":      round(best["market_p"], 4),
+                "est_fill":      round(best["est_fill"], 4),
                 "filled_price":  round(actual_price, 4) if actual_price else None,
                 "edge":          round(best.get("edge", best["model_p"] - best["market_p"]), 4),
                 "ev":            round(best["ev"], 4),
